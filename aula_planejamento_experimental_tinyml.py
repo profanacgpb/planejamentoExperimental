@@ -1,7 +1,7 @@
 ﻿# -*- coding: utf-8 -*-
 """Interface gráfica para análise experimental TinyML com Tkinter.
 
-Executa análise de Friedman, Nemenyi, Cliff's Delta e Bootstrap usando planilhas CSV.
+A interface separa cada teste em abas e exibe os gráficos dentro da janela.
 """
 
 import os
@@ -9,8 +9,10 @@ import sys
 from pathlib import Path
 
 import matplotlib
-matplotlib.use("Agg")
+matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import numpy as np
 import pandas as pd
 from scipy import stats
@@ -53,24 +55,28 @@ def interpretar_delta(delta):
     return magnitude, direcao
 
 
-def save_figure(filename, plot_builder):
-    fig, ax = plt.subplots(figsize=(9, 5))
-    plot_builder(ax)
+def build_friedman_figure(df):
+    fig = Figure(figsize=(7.5, 4.8), dpi=100)
+    ax = fig.add_subplot(111)
+    ax.boxplot([df[c] for c in ESTRATEGIAS])
+    ax.set_xticks(range(1, 5))
+    ax.set_xticklabels(["Baseline", "Quantização", "Poda", "HW-NAS"])
+    ax.set_ylabel("F1-score (%)")
+    ax.set_title("F1-score por estratégia")
     fig.tight_layout()
-    fig.savefig(filename, dpi=180)
-    plt.close(fig)
+    return fig
 
 
 def analyze_friedman(df):
     missing = [col for col in ESTRATEGIAS if col not in df.columns]
     if missing:
-        raise ValueError(f"Faltam colunas no CSV de Friedman/Nemenyi: {missing}")
+        raise ValueError(f"Faltam colunas: {missing}")
 
     resultado = stats.friedmanchisquare(*[df[c] for c in ESTRATEGIAS])
     ranks = df[ESTRATEGIAS].rank(axis=1, method="average")
     postos = ranks.mean().sort_values(ascending=False)
-
     posthoc = sp.posthoc_nemenyi_friedman(df[ESTRATEGIAS])
+
     comparacoes = []
     for i in range(len(ESTRATEGIAS)):
         for j in range(i + 1, len(ESTRATEGIAS)):
@@ -78,58 +84,56 @@ def analyze_friedman(df):
             if p < 0.05:
                 comparacoes.append(f"{ESTRATEGIAS[i]} × {ESTRATEGIAS[j]}: p = {p:.6f}")
 
-    save_figure(
-        "friedman_boxplot.png",
-        lambda ax: (
-            ax.boxplot([df[c] for c in ESTRATEGIAS]),
-            ax.set_xticks(range(1, 5)),
-            ax.set_xticklabels(["Baseline", "Quantização", "Poda", "HW-NAS"]),
-            ax.set_ylabel("F1-score (%)"),
-            ax.set_title("F1-score por estratégia"),
-        ),
-    )
+    report = [
+        "=== FRIEDMAN ===",
+        f"Estatística: {resultado.statistic:.6f}",
+        f"p-valor: {resultado.pvalue:.6f}",
+        "Conclusão: " + ("rejeitamos H0. Existe diferença global entre as estratégias." if resultado.pvalue < 0.05 else "não rejeitamos H0."),
+        "",
+        "Postos médios:",
+        str(postos.to_frame("Posto_medio")),
+        "",
+        "Comparações significativas (p < 0.05):",
+    ]
+    if comparacoes:
+        report.extend(comparacoes)
+    else:
+        report.append("Nenhuma comparação significativa encontrada.")
 
-    return {
-        "resultado": resultado,
-        "postos": postos,
-        "posthoc": posthoc,
-        "comparacoes": comparacoes,
-        "plot": "friedman_boxplot.png",
-    }
+    fig = build_friedman_figure(df)
+    return {"resultado": resultado, "postos": postos, "comparacoes": comparacoes, "report": "\n".join(report), "figure": fig}
+
+
+def build_cliff_figure(df):
+    fig = Figure(figsize=(7.5, 4.8), dpi=100)
+    ax = fig.add_subplot(111)
+    ax.boxplot([df["Baseline"], df["Quantizacao"]])
+    ax.set_xticks([1, 2])
+    ax.set_xticklabels(["Baseline", "Quantização"])
+    ax.set_ylabel("F1-score (%)")
+    ax.set_title("Baseline × Quantização")
+    fig.tight_layout()
+    return fig
 
 
 def analyze_cliff(df):
     required = ["Baseline", "Quantizacao"]
     if any(col not in df.columns for col in required):
-        raise ValueError("CSV de Cliff's Delta deve conter Baseline e Quantizacao.")
+        raise ValueError("CSV deve conter Baseline e Quantizacao.")
 
     delta = cliffs_delta(df["Quantizacao"], df["Baseline"])
     magnitude, direcao = interpretar_delta(delta)
-
-    save_figure(
-        "cliff_boxplot.png",
-        lambda ax: (
-            ax.boxplot([df["Baseline"], df["Quantizacao"]]),
-            ax.set_xticks([1, 2]),
-            ax.set_xticklabels(["Baseline", "Quantização"]),
-            ax.set_ylabel("F1-score (%)"),
-            ax.set_title("Baseline × Quantização"),
-        ),
-    )
-
-    return {
-        "delta": delta,
-        "magnitude": magnitude,
-        "direcao": direcao,
-        "plot": "cliff_boxplot.png",
-    }
+    report = [
+        "=== CLIFF'S DELTA ===",
+        f"Delta = {delta:.3f}",
+        f"Magnitude: {magnitude}",
+        f"Direção: {direcao}",
+    ]
+    fig = build_cliff_figure(df)
+    return {"delta": delta, "magnitude": magnitude, "direcao": direcao, "report": "\n".join(report), "figure": fig}
 
 
-def analyze_bootstrap(df):
-    if "Diferenca_ms" not in df.columns:
-        raise ValueError("CSV de Bootstrap deve conter a coluna Diferenca_ms.")
-
-    dif = df["Diferenca_ms"].to_numpy(dtype=float)
+def build_bootstrap_figure(dif):
     rng = np.random.default_rng(2026)
     B = 10000
     medias_bootstrap = np.empty(B)
@@ -140,26 +144,46 @@ def analyze_bootstrap(df):
     media_bootstrap = float(np.mean(medias_bootstrap))
     ic95 = np.percentile(medias_bootstrap, [2.5, 97.5])
 
-    save_figure(
-        "bootstrap_hist.png",
-        lambda ax: (
-            ax.hist(medias_bootstrap, bins=35, color="steelblue", edgecolor="black"),
-            ax.axvline(media_bootstrap, linestyle="--", color="red", label=f"Média = {media_bootstrap:.2f} ms"),
-            ax.axvline(ic95[0], linestyle=":", color="darkgreen", label=f"IC95% inferior = {ic95[0]:.2f}"),
-            ax.axvline(ic95[1], linestyle=":", color="darkgreen", label=f"IC95% superior = {ic95[1]:.2f}"),
-            ax.set_xlabel("Diferença média de latência (ms)"),
-            ax.set_ylabel("Frequência"),
-            ax.set_title("Distribuição Bootstrap — 10.000 reamostragens"),
-            ax.legend(),
-        ),
-    )
+    fig = Figure(figsize=(7.5, 4.8), dpi=100)
+    ax = fig.add_subplot(111)
+    ax.hist(medias_bootstrap, bins=35, color="steelblue", edgecolor="black")
+    ax.axvline(media_bootstrap, linestyle="--", color="red", label=f"Média = {media_bootstrap:.2f} ms")
+    ax.axvline(ic95[0], linestyle=":", color="darkgreen", label=f"IC95% inferior = {ic95[0]:.2f}")
+    ax.axvline(ic95[1], linestyle=":", color="darkgreen", label=f"IC95% superior = {ic95[1]:.2f}")
+    ax.set_xlabel("Diferença média de latência (ms)")
+    ax.set_ylabel("Frequência")
+    ax.set_title("Distribuição Bootstrap — 10.000 reamostragens")
+    ax.legend()
+    fig.tight_layout()
+    return fig, media_bootstrap, ic95
 
-    return {
-        "dif": dif,
-        "media": media_bootstrap,
-        "ic95": ic95,
-        "plot": "bootstrap_hist.png",
-    }
+
+def analyze_bootstrap(df):
+    if "Diferenca_ms" not in df.columns:
+        raise ValueError("CSV deve conter a coluna Diferenca_ms.")
+
+    dif = df["Diferenca_ms"].to_numpy(dtype=float)
+    fig, media_bootstrap, ic95 = build_bootstrap_figure(dif)
+    report = [
+        "=== BOOTSTRAP ===",
+        f"Diferença média observada: {dif.mean():.2f} ms",
+        f"Estimativa média: {media_bootstrap:.2f} ms",
+        f"IC95%: [{ic95[0]:.2f}; {ic95[1]:.2f}] ms",
+    ]
+    return {"dif": dif, "media": media_bootstrap, "ic95": ic95, "report": "\n".join(report), "figure": fig}
+
+
+def build_integrado_figure(df):
+    fig = Figure(figsize=(8, 4.8), dpi=100)
+    ax = fig.add_subplot(111)
+    resumo = df.groupby(["Hardware", "Estrategia"])["F1_score"].mean().unstack(fill_value=0)
+    resumo.plot(kind="bar", ax=ax)
+    ax.set_title("F1-score médio por hardware e estratégia")
+    ax.set_ylabel("F1-score (%)")
+    ax.set_xlabel("Hardware")
+    ax.legend(title="Estratégia")
+    fig.tight_layout()
+    return fig
 
 
 def analyze_integrado(df):
@@ -174,67 +198,76 @@ def analyze_integrado(df):
         .mean()
         .round(2)
     )
-    return {"resumo": resumo}
+    fig = build_integrado_figure(df)
+    report = [
+        "=== DATASET INTEGRADO ===",
+        str(resumo),
+    ]
+    return {"resumo": resumo, "report": "\n".join(report), "figure": fig}
 
 
 def run_analysis(friedman_path=None, cliff_path=None, bootstrap_path=None, integrado_path=None):
-    output = []
-
+    parts = []
     if friedman_path:
-        df_friedman = pd.read_csv(friedman_path)
-        friedman = analyze_friedman(df_friedman)
-        output.append("=== FRIEDMAN ===")
-        output.append(f"Estatística: {friedman['resultado'].statistic:.6f}")
-        output.append(f"p-valor: {friedman['resultado'].pvalue:.6f}")
-        output.append("Conclusão: " + ("rejeitamos H0. Existe diferença global entre as estratégias." if friedman['resultado'].pvalue < 0.05 else "não rejeitamos H0."))
-        output.append("\nPostos médios:")
-        output.append(str(friedman['postos'].to_frame('Posto_medio')))
-        output.append("\nComparações significativas (p < 0.05):")
-        if friedman['comparacoes']:
-            output.extend(friedman['comparacoes'])
-        else:
-            output.append("Nenhuma comparação significativa encontrada.")
-
+        df = pd.read_csv(friedman_path)
+        result = analyze_friedman(df)
+        parts.append(result["report"])
     if cliff_path:
-        df_cliff = pd.read_csv(cliff_path)
-        cliff = analyze_cliff(df_cliff)
-        output.append("\n=== CLIFF'S DELTA ===")
-        output.append(f"Delta = {cliff['delta']:.3f}")
-        output.append(f"Magnitude: {cliff['magnitude']}")
-        output.append(f"Direção: {cliff['direcao']}")
-
+        df = pd.read_csv(cliff_path)
+        result = analyze_cliff(df)
+        parts.append(result["report"])
     if bootstrap_path:
-        df_boot = pd.read_csv(bootstrap_path)
-        boot = analyze_bootstrap(df_boot)
-        output.append("\n=== BOOTSTRAP ===")
-        output.append(f"Diferença média observada: {boot['dif'].mean():.2f} ms")
-        output.append(f"Estimativa média: {boot['media']:.2f} ms")
-        output.append(f"IC95%: [{boot['ic95'][0]:.2f}; {boot['ic95'][1]:.2f}] ms")
-
+        df = pd.read_csv(bootstrap_path)
+        result = analyze_bootstrap(df)
+        parts.append(result["report"])
     if integrado_path:
-        df_integrado = pd.read_csv(integrado_path)
-        integrado = analyze_integrado(df_integrado)
-        output.append("\n=== DATASET INTEGRADO ===")
-        output.append(str(integrado['resumo']))
-
-    return "\n".join(output)
+        df = pd.read_csv(integrado_path)
+        result = analyze_integrado(df)
+        parts.append(result["report"])
+    return "\n\n".join(parts)
 
 
 class TinyMLApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Planejamento Experimental TinyML")
-        self.geometry("980x720")
-        self.minsize(900, 650)
+        self.geometry("1100x760")
+        self.minsize(980, 640)
 
-        self.friedman_path = tk.StringVar()
-        self.cliff_path = tk.StringVar()
-        self.bootstrap_path = tk.StringVar()
-        self.integrado_path = tk.StringVar()
+        self.style = ttk.Style(self)
+        try:
+            self.style.theme_use("clam")
+        except Exception:
+            pass
 
+        self.tabs = ttk.Notebook(self)
+        self.tabs.pack(fill="both", expand=True, padx=12, pady=12)
+
+        self.friedman_tab = ttk.Frame(self.tabs)
+        self.cliff_tab = ttk.Frame(self.tabs)
+        self.bootstrap_tab = ttk.Frame(self.tabs)
+        self.integrado_tab = ttk.Frame(self.tabs)
+        self.tabs.add(self.friedman_tab, text="Friedman")
+        self.tabs.add(self.cliff_tab, text="Cliff's Delta")
+        self.tabs.add(self.bootstrap_tab, text="Bootstrap")
+        self.tabs.add(self.integrado_tab, text="Integrado")
+
+        self.file_vars = {
+            "friedman": tk.StringVar(),
+            "cliff": tk.StringVar(),
+            "bootstrap": tk.StringVar(),
+            "integrado": tk.StringVar(),
+        }
         self._configure_default_paths()
 
-        self._build_ui()
+        self._build_tab(self.friedman_tab, "CSV Friedman/Nemenyi", "friedman", self.execute_friedman)
+        self._build_tab(self.cliff_tab, "CSV Cliff's Delta", "cliff", self.execute_cliff)
+        self._build_tab(self.bootstrap_tab, "CSV Bootstrap", "bootstrap", self.execute_bootstrap)
+        self._build_tab(self.integrado_tab, "CSV Integrado", "integrado", self.execute_integrado)
+
+        self.status_var = tk.StringVar(value="Selecione os arquivos e execute cada teste em sua aba.")
+        status = ttk.Label(self, textvariable=self.status_var, anchor="w")
+        status.pack(fill="x", padx=12, pady=(0, 12))
 
     def _configure_default_paths(self):
         project_dir = Path(__file__).resolve().parent
@@ -244,114 +277,140 @@ class TinyMLApp(tk.Tk):
             "bootstrap": ["bootstrap.csv", "df_boot.csv", "latencia_bootstrap.csv"],
             "integrado": ["integrado.csv", "dataset_integrado.csv", "df_integrado.csv"],
         }
-
         for key, names in auto_files.items():
             for name in names:
                 candidate = project_dir / name
                 if candidate.exists():
-                    setattr(self, f"_{key}_default", str(candidate))
+                    self.file_vars[key].set(str(candidate))
                     break
-            else:
-                setattr(self, f"_{key}_default", "")
 
-        self.friedman_path.set(getattr(self, "_friedman_default", ""))
-        self.cliff_path.set(getattr(self, "_cliff_default", ""))
-        self.bootstrap_path.set(getattr(self, "_bootstrap_default", ""))
-        self.integrado_path.set(getattr(self, "_integrado_default", ""))
+    def _build_tab(self, container, label_text, key, command):
+        top = ttk.Frame(container, padding=12)
+        top.pack(fill="x")
 
-    def _build_ui(self):
-        main = ttk.Frame(self, padding=16)
-        main.pack(fill="both", expand=True)
+        row = ttk.Frame(top)
+        row.pack(fill="x", pady=6)
+        ttk.Label(row, text=label_text, width=20, anchor="w").pack(side="left")
+        entry = ttk.Entry(row, textvariable=self.file_vars[key], width=80)
+        entry.pack(side="left", fill="x", expand=True, padx=(8, 8))
+        tk.Button(row, text="Procurar", bg="#4F46E5", fg="white", activebackground="#4338CA", command=lambda: self._browse_file(self.file_vars[key])).pack(side="left")
 
-        title = ttk.Label(main, text="Planejamento Experimental em TinyML", font=("Arial", 16, "bold"))
-        title.pack(anchor="w", pady=(0, 12))
+        action_row = ttk.Frame(top)
+        action_row.pack(fill="x", pady=(8, 12))
+        tk.Button(action_row, text="Executar teste", bg="#16A34A", fg="white", activebackground="#15803D", command=command, width=18, height=1).pack(side="left")
 
-        self.fields = []
-        for label, var, key in [
-            ("CSV Friedman/Nemenyi", self.friedman_path, "friedman"),
-            ("CSV Cliff's Delta", self.cliff_path, "cliff"),
-            ("CSV Bootstrap", self.bootstrap_path, "bootstrap"),
-            ("CSV Integrado", self.integrado_path, "integrado"),
-        ]:
-            row = ttk.Frame(main)
-            row.pack(fill="x", pady=6)
+        result_frame = ttk.LabelFrame(container, text="Resultado e gráfico")
+        result_frame.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
-            ttk.Label(row, text=label, width=18, anchor="w").pack(side="left")
-            entry = ttk.Entry(row, textvariable=var, width=80)
-            entry.pack(side="left", fill="x", expand=True, padx=(8, 8))
-            btn = ttk.Button(row, text="Procurar", command=lambda v=var, k=key: self._browse_file(v, k))
-            btn.pack(side="left")
-            self.fields.append((label, var))
+        result_box = scrolledtext.ScrolledText(result_frame, wrap=tk.WORD, height=11)
+        result_box.pack(fill="x", padx=8, pady=(8, 6))
+        result_box.insert(tk.END, "Aguardando execução...\n")
+        result_box.configure(state="disabled")
+        setattr(container, "result_box", result_box)
 
-        actions = ttk.Frame(main)
-        actions.pack(fill="x", pady=(14, 8))
-        ttk.Button(actions, text="Executar análise", command=self.run_gui_analysis).pack(side="left")
-        ttk.Button(actions, text="Limpar", command=self.clear_output).pack(side="left", padx=(10, 0))
+        plot_holder = ttk.Frame(result_frame)
+        plot_holder.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        setattr(container, "plot_holder", plot_holder)
 
-        output_label = ttk.Label(main, text="Resultado:", font=("Arial", 10, "bold"))
-        output_label.pack(anchor="w", pady=(8, 4))
-
-        self.output = scrolledtext.ScrolledText(main, wrap=tk.WORD, height=24)
-        self.output.pack(fill="both", expand=True)
-        self.output.insert(tk.END, "Selecione os arquivos CSV e clique em Executar análise.\n")
-        self.output.configure(state="disabled")
-
-    def _browse_file(self, var, key):
+    def _browse_file(self, var):
         path = filedialog.askopenfilename(
-            title=f"Selecionar {key}",
+            title="Selecionar arquivo CSV",
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
             initialdir=str(Path(__file__).resolve().parent),
         )
         if path:
             var.set(path)
 
-    def clear_output(self):
-        self.output.configure(state="normal")
-        self.output.delete(1.0, tk.END)
-        self.output.insert(tk.END, "Selecione os arquivos CSV e clique em Executar análise.\n")
-        self.output.configure(state="disabled")
+    def _render_plot(self, parent, fig):
+        for widget in parent.winfo_children():
+            widget.destroy()
+        canvas = FigureCanvasTkAgg(fig, master=parent)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+        return canvas
 
-    def run_gui_analysis(self):
-        paths = {
-            "friedman": self.friedman_path.get(),
-            "cliff": self.cliff_path.get(),
-            "bootstrap": self.bootstrap_path.get(),
-            "integrado": self.integrado_path.get(),
-        }
+    def _set_result(self, tab, text):
+        tab.result_box.configure(state="normal")
+        tab.result_box.delete(1.0, tk.END)
+        tab.result_box.insert(tk.END, text)
+        tab.result_box.configure(state="disabled")
 
-        missing = [name for name, path in paths.items() if not path or not os.path.exists(path)]
-        if missing:
-            messagebox.showwarning("Arquivos ausentes", "Selecione os arquivos CSV necessários antes de executar.\nFaltando: " + ", ".join(missing))
+    def execute_friedman(self):
+        tab = self.friedman_tab
+        path = self.file_vars["friedman"].get()
+        if not path or not os.path.exists(path):
+            messagebox.showwarning("Arquivo obrigatório", "Selecione o CSV do teste de Friedman.")
             return
-
         try:
-            report = run_analysis(
-                friedman_path=paths["friedman"],
-                cliff_path=paths["cliff"],
-                bootstrap_path=paths["bootstrap"],
-                integrado_path=paths["integrado"],
-            )
-            self.output.configure(state="normal")
-            self.output.delete(1.0, tk.END)
-            self.output.insert(tk.END, report)
-            self.output.configure(state="disabled")
+            df = pd.read_csv(path)
+            result = analyze_friedman(df)
+            self._set_result(tab, result["report"])
+            self._render_plot(tab.plot_holder, result["figure"])
+            self.status_var.set("Teste de Friedman executado com sucesso.")
         except Exception as exc:
-            self.output.configure(state="normal")
-            self.output.delete(1.0, tk.END)
-            self.output.insert(tk.END, f"Erro ao executar a análise:\n{exc}")
-            self.output.configure(state="disabled")
+            self._set_result(tab, f"Erro:\n{exc}")
+            self.status_var.set(f"Erro no teste de Friedman: {exc}")
+            messagebox.showerror("Erro", str(exc))
+
+    def execute_cliff(self):
+        tab = self.cliff_tab
+        path = self.file_vars["cliff"].get()
+        if not path or not os.path.exists(path):
+            messagebox.showwarning("Arquivo obrigatório", "Selecione o CSV do teste de Cliff's Delta.")
+            return
+        try:
+            df = pd.read_csv(path)
+            result = analyze_cliff(df)
+            self._set_result(tab, result["report"])
+            self._render_plot(tab.plot_holder, result["figure"])
+            self.status_var.set("Teste de Cliff's Delta executado com sucesso.")
+        except Exception as exc:
+            self._set_result(tab, f"Erro:\n{exc}")
+            self.status_var.set(f"Erro no teste de Cliff's Delta: {exc}")
+            messagebox.showerror("Erro", str(exc))
+
+    def execute_bootstrap(self):
+        tab = self.bootstrap_tab
+        path = self.file_vars["bootstrap"].get()
+        if not path or not os.path.exists(path):
+            messagebox.showwarning("Arquivo obrigatório", "Selecione o CSV do bootstrap.")
+            return
+        try:
+            df = pd.read_csv(path)
+            result = analyze_bootstrap(df)
+            self._set_result(tab, result["report"])
+            self._render_plot(tab.plot_holder, result["figure"])
+            self.status_var.set("Bootstrap executado com sucesso.")
+        except Exception as exc:
+            self._set_result(tab, f"Erro:\n{exc}")
+            self.status_var.set(f"Erro no bootstrap: {exc}")
+            messagebox.showerror("Erro", str(exc))
+
+    def execute_integrado(self):
+        tab = self.integrado_tab
+        path = self.file_vars["integrado"].get()
+        if not path or not os.path.exists(path):
+            messagebox.showwarning("Arquivo obrigatório", "Selecione o CSV integrado.")
+            return
+        try:
+            df = pd.read_csv(path)
+            result = analyze_integrado(df)
+            self._set_result(tab, result["report"])
+            self._render_plot(tab.plot_holder, result["figure"])
+            self.status_var.set("Resumo integrado executado com sucesso.")
+        except Exception as exc:
+            self._set_result(tab, f"Erro:\n{exc}")
+            self.status_var.set(f"Erro no resumo integrado: {exc}")
             messagebox.showerror("Erro", str(exc))
 
 
 if __name__ == "__main__":
-    if "--gui" in sys.argv or len(sys.argv) == 1:
+    if "--cli" in sys.argv:
+        args = sys.argv[2:]
+        if len(args) == 4:
+            print(run_analysis(*args))
+        else:
+            print("Uso: python aula_planejamento_experimental_tinyml.py --cli friedman.csv cliff.csv bootstrap.csv integrado.csv")
+    else:
         app = TinyMLApp()
         app.mainloop()
-    else:
-        args = sys.argv[1:]
-        if len(args) == 4:
-            report = run_analysis(*args)
-            print(report)
-        else:
-            print("Uso: python aula_planejamento_experimental_tinyml.py [--gui] [friedman.csv cliff.csv bootstrap.csv integrado.csv]")
-            print("Ou apenas execute sem argumentos para abrir a interface gráfica.")
