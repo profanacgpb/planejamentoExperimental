@@ -231,8 +231,10 @@ class TinyMLApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Planejamento Experimental TinyML")
-        self.geometry("1100x760")
-        self.minsize(980, 640)
+        self.geometry("1280x820")
+        self.minsize(1020, 680)
+        self.dark_mode = False
+        self._text_boxes = []
 
         self.style = ttk.Style(self)
         try:
@@ -240,8 +242,26 @@ class TinyMLApp(tk.Tk):
         except Exception:
             pass
 
+        header = ttk.Frame(self, padding=(20, 16, 20, 10))
+        header.pack(fill="x")
+        heading = ttk.Frame(header)
+        heading.pack(side="left", fill="x", expand=True)
+        ttk.Label(heading, text="Planejamento Experimental", style="Heading.TLabel").pack(anchor="w")
+        ttk.Label(
+            heading,
+            text="Análises estatísticas e visualizações para experimentos TinyML",
+            style="Subtitle.TLabel",
+        ).pack(anchor="w", pady=(3, 0))
+        self.theme_button = ttk.Button(
+            header,
+            text="Modo escuro",
+            command=self._toggle_theme,
+            style="Secondary.TButton",
+        )
+        self.theme_button.pack(side="right", padx=(12, 0))
+
         self.tabs = ttk.Notebook(self)
-        self.tabs.pack(fill="both", expand=True, padx=12, pady=12)
+        self.tabs.pack(fill="both", expand=True, padx=16, pady=(4, 10))
 
         self.friedman_tab = ttk.Frame(self.tabs)
         self.cliff_tab = ttk.Frame(self.tabs)
@@ -266,8 +286,10 @@ class TinyMLApp(tk.Tk):
         self._build_tab(self.integrado_tab, "CSV Integrado", "integrado", self.execute_integrado)
 
         self.status_var = tk.StringVar(value="Selecione os arquivos e execute cada teste em sua aba.")
-        status = ttk.Label(self, textvariable=self.status_var, anchor="w")
-        status.pack(fill="x", padx=12, pady=(0, 12))
+        footer = ttk.Frame(self, padding=(18, 0, 18, 12))
+        footer.pack(fill="x")
+        ttk.Label(footer, textvariable=self.status_var, anchor="w").pack(fill="x")
+        self._apply_theme()
 
     def _configure_default_paths(self):
         project_dir = Path(__file__).resolve().parent
@@ -285,31 +307,69 @@ class TinyMLApp(tk.Tk):
                     break
 
     def _build_tab(self, container, label_text, key, command):
-        top = ttk.Frame(container, padding=12)
+        top = ttk.Frame(container, padding=(16, 14, 16, 10))
         top.pack(fill="x")
 
         row = ttk.Frame(top)
-        row.pack(fill="x", pady=6)
+        row.pack(fill="x")
         ttk.Label(row, text=label_text, width=20, anchor="w").pack(side="left")
-        entry = ttk.Entry(row, textvariable=self.file_vars[key], width=80)
-        entry.pack(side="left", fill="x", expand=True, padx=(8, 8))
-        tk.Button(row, text="Procurar", bg="#4F46E5", fg="white", activebackground="#4338CA", command=lambda: self._browse_file(self.file_vars[key])).pack(side="left")
+        ttk.Entry(row, textvariable=self.file_vars[key]).pack(side="left", fill="x", expand=True, padx=(8, 8))
+        ttk.Button(
+            row,
+            text="Selecionar CSV",
+            style="Accent.TButton",
+            command=lambda: self._browse_file(self.file_vars[key]),
+        ).pack(side="left")
 
         action_row = ttk.Frame(top)
-        action_row.pack(fill="x", pady=(8, 12))
-        tk.Button(action_row, text="Executar teste", bg="#16A34A", fg="white", activebackground="#15803D", command=command, width=18, height=1).pack(side="left")
+        action_row.pack(fill="x", pady=(12, 0))
+        ttk.Button(
+            action_row,
+            text="Executar análise",
+            style="Success.TButton",
+            command=command,
+        ).pack(side="left")
+        ttk.Button(
+            action_row,
+            text="Limpar",
+            style="Secondary.TButton",
+            command=lambda: self._clear_tab(container, key),
+        ).pack(side="left", padx=(8, 0))
+        ttk.Button(
+            action_row,
+            text="Exportar relatório TXT",
+            style="Secondary.TButton",
+            command=lambda: self._export_report(container, key),
+        ).pack(side="left", padx=(8, 0))
 
-        result_frame = ttk.LabelFrame(container, text="Resultado e gráfico")
-        result_frame.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        output = ttk.Panedwindow(container, orient="horizontal")
+        output.pack(fill="both", expand=True, padx=16, pady=(0, 16))
 
-        result_box = scrolledtext.ScrolledText(result_frame, wrap=tk.WORD, height=11)
-        result_box.pack(fill="x", padx=8, pady=(8, 6))
-        result_box.insert(tk.END, "Aguardando execução...\n")
+        result_frame = ttk.LabelFrame(output, text="Relatório", padding=8)
+        plot_frame = ttk.LabelFrame(output, text="Visualização", padding=8)
+        output.add(result_frame, weight=1)
+        output.add(plot_frame, weight=2)
+
+        result_box = scrolledtext.ScrolledText(
+            result_frame,
+            wrap=tk.WORD,
+            height=20,
+            font=("Consolas", 10),
+            padx=10,
+            pady=10,
+            borderwidth=0,
+        )
+        result_box.pack(fill="both", expand=True)
+        result_box.insert(tk.END, "Selecione um arquivo CSV e execute a análise.")
         result_box.configure(state="disabled")
         setattr(container, "result_box", result_box)
+        setattr(container, "report_text", "")
+        setattr(container, "figure", None)
+        setattr(container, "canvas", None)
+        self._text_boxes.append(result_box)
 
-        plot_holder = ttk.Frame(result_frame)
-        plot_holder.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        plot_holder = ttk.Frame(plot_frame)
+        plot_holder.pack(fill="both", expand=True)
         setattr(container, "plot_holder", plot_holder)
 
     def _browse_file(self, var):
@@ -321,19 +381,182 @@ class TinyMLApp(tk.Tk):
         if path:
             var.set(path)
 
-    def _render_plot(self, parent, fig):
+    def _render_plot(self, tab, fig):
+        parent = tab.plot_holder
+        previous_figure = getattr(tab, "figure", None)
+        if previous_figure is not None and previous_figure is not fig:
+            plt.close(previous_figure)
         for widget in parent.winfo_children():
             widget.destroy()
+        self._style_figure(fig)
         canvas = FigureCanvasTkAgg(fig, master=parent)
         canvas.draw()
         canvas.get_tk_widget().pack(fill="both", expand=True)
+        setattr(tab, "figure", fig)
+        setattr(tab, "canvas", canvas)
         return canvas
 
     def _set_result(self, tab, text):
+        setattr(tab, "report_text", text)
         tab.result_box.configure(state="normal")
         tab.result_box.delete(1.0, tk.END)
         tab.result_box.insert(tk.END, text)
         tab.result_box.configure(state="disabled")
+
+    def _clear_tab(self, tab, key):
+        self.file_vars[key].set("")
+        self._set_result(tab, "")
+        tab.result_box.configure(state="normal")
+        tab.result_box.insert(tk.END, "Selecione um arquivo CSV e execute a análise.")
+        tab.result_box.configure(state="disabled")
+
+        figure = getattr(tab, "figure", None)
+        if figure is not None:
+            plt.close(figure)
+            tab.figure = None
+        tab.canvas = None
+        for widget in tab.plot_holder.winfo_children():
+            widget.destroy()
+        self.status_var.set("Aba limpa. Selecione um arquivo CSV para começar.")
+
+    def _export_report(self, tab, key):
+        report = getattr(tab, "report_text", "")
+        if not report.strip():
+            messagebox.showwarning("Sem relatório", "Execute uma análise antes de exportar o relatório.")
+            return
+
+        path = filedialog.asksaveasfilename(
+            title="Exportar relatório",
+            defaultextension=".txt",
+            initialfile=f"relatorio_{key}.txt",
+            filetypes=[("Arquivo de texto", "*.txt")],
+        )
+        if not path:
+            return
+        try:
+            Path(path).write_text(report + "\n", encoding="utf-8")
+        except OSError as exc:
+            messagebox.showerror("Falha ao exportar", f"Não foi possível salvar o relatório:\n{exc}")
+            return
+        self.status_var.set(f"Relatório exportado: {path}")
+
+    def _toggle_theme(self):
+        self.dark_mode = not self.dark_mode
+        self.theme_button.configure(text="Modo claro" if self.dark_mode else "Modo escuro")
+        self._apply_theme()
+        for tab in (self.friedman_tab, self.cliff_tab, self.bootstrap_tab, self.integrado_tab):
+            figure = getattr(tab, "figure", None)
+            canvas = getattr(tab, "canvas", None)
+            if figure is not None and canvas is not None:
+                self._style_figure(figure)
+                canvas.draw_idle()
+
+    def _apply_theme(self):
+        if self.dark_mode:
+            colors = {
+                "background": "#111827",
+                "surface": "#1F2937",
+                "foreground": "#F9FAFB",
+                "muted": "#CBD5E1",
+                "input": "#0F172A",
+                "border": "#374151",
+            }
+        else:
+            colors = {
+                "background": "#F3F4F6",
+                "surface": "#FFFFFF",
+                "foreground": "#111827",
+                "muted": "#64748B",
+                "input": "#FFFFFF",
+                "border": "#D1D5DB",
+            }
+
+        background = colors["background"]
+        surface = colors["surface"]
+        foreground = colors["foreground"]
+        self.configure(background=background)
+        self.style.configure("TFrame", background=background)
+        self.style.configure("TLabel", background=background, foreground=foreground)
+        self.style.configure("Heading.TLabel", background=background, foreground=foreground, font=("Segoe UI", 20, "bold"))
+        self.style.configure("Subtitle.TLabel", background=background, foreground=colors["muted"], font=("Segoe UI", 10))
+        self.style.configure("TLabelFrame", background=background, foreground=foreground, bordercolor=colors["border"])
+        self.style.configure("TLabelFrame.Label", background=background, foreground=foreground, font=("Segoe UI", 10, "bold"))
+        self.style.configure(
+            "TNotebook",
+            background=background,
+            bordercolor=colors["border"],
+            tabmargins=(2, 4, 2, 0),
+        )
+        self.style.configure(
+            "TNotebook.Tab",
+            background=surface,
+            foreground=foreground,
+            padding=(16, 9),
+            font=("Segoe UI", 10, "bold"),
+        )
+        self.style.map(
+            "TNotebook.Tab",
+            background=[("selected", "#4F46E5" if not self.dark_mode else "#6366F1")],
+            foreground=[("selected", "#FFFFFF")],
+        )
+        self.style.configure(
+            "TEntry",
+            fieldbackground=colors["input"],
+            foreground=foreground,
+            insertcolor=foreground,
+            bordercolor=colors["border"],
+            padding=7,
+        )
+        self.style.configure(
+            "Secondary.TButton",
+            background=surface,
+            foreground=foreground,
+            bordercolor=colors["border"],
+            padding=(12, 7),
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.style.map("Secondary.TButton", background=[("active", colors["border"])])
+        for style_name, color, active in (
+            ("Accent.TButton", "#4F46E5", "#4338CA"),
+            ("Success.TButton", "#16A34A", "#15803D"),
+        ):
+            self.style.configure(
+                style_name,
+                background=color,
+                foreground="#FFFFFF",
+                bordercolor=color,
+                padding=(12, 7),
+                font=("Segoe UI", 9, "bold"),
+            )
+            self.style.map(style_name, background=[("active", active)])
+
+        for text_box in self._text_boxes:
+            text_box.configure(
+                background=colors["input"],
+                foreground=foreground,
+                insertbackground=foreground,
+                selectbackground="#4F46E5",
+                selectforeground="#FFFFFF",
+            )
+
+    def _style_figure(self, fig):
+        background = "#1F2937" if self.dark_mode else "#FFFFFF"
+        foreground = "#F9FAFB" if self.dark_mode else "#111827"
+        fig.set_facecolor(background)
+        for axis in fig.axes:
+            axis.set_facecolor(background)
+            axis.title.set_color(foreground)
+            axis.xaxis.label.set_color(foreground)
+            axis.yaxis.label.set_color(foreground)
+            axis.tick_params(colors=foreground)
+            for spine in axis.spines.values():
+                spine.set_color("#64748B" if self.dark_mode else "#9CA3AF")
+            legend = axis.get_legend()
+            if legend is not None:
+                legend.get_frame().set_facecolor(background)
+                legend.get_frame().set_edgecolor("#64748B" if self.dark_mode else "#D1D5DB")
+                for text in legend.get_texts():
+                    text.set_color(foreground)
 
     def execute_friedman(self):
         tab = self.friedman_tab
@@ -345,7 +568,7 @@ class TinyMLApp(tk.Tk):
             df = pd.read_csv(path)
             result = analyze_friedman(df)
             self._set_result(tab, result["report"])
-            self._render_plot(tab.plot_holder, result["figure"])
+            self._render_plot(tab, result["figure"])
             self.status_var.set("Teste de Friedman executado com sucesso.")
         except Exception as exc:
             self._set_result(tab, f"Erro:\n{exc}")
@@ -362,7 +585,7 @@ class TinyMLApp(tk.Tk):
             df = pd.read_csv(path)
             result = analyze_cliff(df)
             self._set_result(tab, result["report"])
-            self._render_plot(tab.plot_holder, result["figure"])
+            self._render_plot(tab, result["figure"])
             self.status_var.set("Teste de Cliff's Delta executado com sucesso.")
         except Exception as exc:
             self._set_result(tab, f"Erro:\n{exc}")
@@ -379,7 +602,7 @@ class TinyMLApp(tk.Tk):
             df = pd.read_csv(path)
             result = analyze_bootstrap(df)
             self._set_result(tab, result["report"])
-            self._render_plot(tab.plot_holder, result["figure"])
+            self._render_plot(tab, result["figure"])
             self.status_var.set("Bootstrap executado com sucesso.")
         except Exception as exc:
             self._set_result(tab, f"Erro:\n{exc}")
@@ -396,7 +619,7 @@ class TinyMLApp(tk.Tk):
             df = pd.read_csv(path)
             result = analyze_integrado(df)
             self._set_result(tab, result["report"])
-            self._render_plot(tab.plot_holder, result["figure"])
+            self._render_plot(tab, result["figure"])
             self.status_var.set("Resumo integrado executado com sucesso.")
         except Exception as exc:
             self._set_result(tab, f"Erro:\n{exc}")
